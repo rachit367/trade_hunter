@@ -10,7 +10,7 @@ from typing import List, Optional
 from enum import Enum
 
 import pandas as pd
-import numpy as np
+from ta.volatility import AverageTrueRange
 
 from trading_bot.indicators.rsi import calculate_rsi
 from trading_bot.strategy.range_detector import detect_ranges, ConsolidationRange
@@ -79,6 +79,8 @@ class StrategyConfig:
     # Divergence
     divergence_lookback: int = 10
     swing_order: int = 2
+    min_rsi_diff: float = 6.0        # Minimum RSI difference to consider valid
+    divergence_atr_multiplier: float = 0.3 # Minimum price move in terms of ATR -> divergence valid
 
     # Risk management
     risk_reward_ratio: float = 2.0
@@ -119,9 +121,11 @@ def generate_signals(
     if config is None:
         config = StrategyConfig()
 
-    # Step 1: Calculate RSI
+    # Step 1: Calculate RSI & ATR
     rsi_series = calculate_rsi(df["Close"], config.rsi_period)
     rsi = rsi_series.values
+    atr_series = AverageTrueRange(df["High"], df["Low"], df["Close"], window=14).average_true_range()
+    atr = atr_series.values
     highs = df["High"].values
     lows = df["Low"].values
     closes = df["Close"].values
@@ -136,6 +140,7 @@ def generate_signals(
     )
 
     signals: List[TradeSignal] = []
+    seen_times = set()
 
     # Step 3–5: For each range, detect breakout + divergence
     for rng in ranges:
@@ -151,17 +156,30 @@ def generate_signals(
             breakout_level = rng.range_high * (1 + config.breakout_pct / 100.0)
             if highs[i] > breakout_level:
                 div = detect_bearish_divergence(
-                    highs, rsi, i,
+                    highs, rsi, atr, i,
                     lookback=config.divergence_lookback,
                     swing_order=config.swing_order,
+                    min_rsi_diff=config.min_rsi_diff,
+                    atr_multiplier=config.divergence_atr_multiplier,
                 )
                 if div is not None:
+                    if df.index[i] in seen_times:
+                        signal_found = True
+                        continue
+
                     # SHORT signal — manipulation of buy-side liquidity
                     manipulation_high = highs[i]
                     entry = closes[i]
                     sl = manipulation_high * (1 + config.sl_buffer_pct / 100.0)
+                    # TP = range low (opposite side of the range)
+                    tp = rng.range_low
+
                     risk = abs(entry - sl)
-                    tp = entry - risk * config.risk_reward_ratio
+                    reward = entry - tp
+                    if risk > 0:
+                        rr = reward / risk
+                        rr = max(1.5, min(rr, 5.0))
+                        tp = entry - (rr * risk)
 
                     signals.append(TradeSignal(
                         direction=Direction.SHORT,
@@ -176,6 +194,7 @@ def generate_signals(
                         range_end_idx=rng.end_idx,
                         divergence=div,
                     ))
+                    seen_times.add(df.index[i])
                     signal_found = True
                     continue
 
@@ -183,17 +202,30 @@ def generate_signals(
             breakdown_level = rng.range_low * (1 - config.breakout_pct / 100.0)
             if lows[i] < breakdown_level:
                 div = detect_bullish_divergence(
-                    lows, rsi, i,
+                    lows, rsi, atr, i,
                     lookback=config.divergence_lookback,
                     swing_order=config.swing_order,
+                    min_rsi_diff=config.min_rsi_diff,
+                    atr_multiplier=config.divergence_atr_multiplier,
                 )
                 if div is not None:
+                    if df.index[i] in seen_times:
+                        signal_found = True
+                        continue
+
                     # LONG signal — manipulation of sell-side liquidity
                     manipulation_low = lows[i]
                     entry = closes[i]
                     sl = manipulation_low * (1 - config.sl_buffer_pct / 100.0)
+                    # TP = range high (opposite side of the range)
+                    tp = rng.range_high
+
                     risk = abs(entry - sl)
-                    tp = entry + risk * config.risk_reward_ratio
+                    reward = tp - entry
+                    if risk > 0:
+                        rr = reward / risk
+                        rr = max(1.5, min(rr, 5.0))
+                        tp = entry + (rr * risk)
 
                     signals.append(TradeSignal(
                         direction=Direction.LONG,
@@ -208,6 +240,7 @@ def generate_signals(
                         range_end_idx=rng.end_idx,
                         divergence=div,
                     ))
+                    seen_times.add(df.index[i])
                     signal_found = True
 
     return signals

@@ -28,10 +28,12 @@ class DivergenceResult:
 def detect_bearish_divergence(
     highs: np.ndarray,
     rsi: np.ndarray,
+    atr: np.ndarray,
     current_idx: int,
     lookback: int = 10,
     swing_order: int = 2,
-    min_rsi_diff: float = 5.0,
+    min_rsi_diff: float = 6.0,
+    atr_multiplier: float = 0.3,
 ) -> Optional[DivergenceResult]:
     """
     Check for bearish divergence at `current_idx`.
@@ -63,8 +65,26 @@ def detect_bearish_divergence(
 
     current_rsi = rsi[current_idx]
     current_high = highs[current_idx]
+    current_atr = atr[current_idx]
 
-    if np.isnan(current_rsi):
+    if np.isnan(current_rsi) or np.isnan(current_atr):
+        return None
+
+    # Check if current_idx correctly forms a swing high
+    left_start = max(0, current_idx - swing_order)
+    right_end = min(len(highs), current_idx + swing_order + 1)
+    
+    # Must have enough historical candles to form a clear swing
+    if current_idx < left_start + swing_order:
+        return None
+        
+    is_swing = True
+    for j in range(left_start, right_end):
+        if j != current_idx and highs[j] >= current_high:
+            is_swing = False
+            break
+            
+    if not is_swing:
         return None
 
     # Find swing highs in the lookback window BEFORE current candle
@@ -93,6 +113,12 @@ def detect_bearish_divergence(
 
         # Bearish divergence: price HH + RSI LH
         if current_high > prior_high and current_rsi < prior_rsi:
+            
+            # Check price move vs ATR
+            price_move = current_high - prior_high
+            if price_move < (current_atr * atr_multiplier):
+                continue
+
             if abs(prior_rsi - current_rsi) >= min_rsi_diff:
                 return DivergenceResult(
                     divergence_type="bearish",
@@ -110,10 +136,12 @@ def detect_bearish_divergence(
 def detect_bullish_divergence(
     lows: np.ndarray,
     rsi: np.ndarray,
+    atr: np.ndarray,
     current_idx: int,
     lookback: int = 10,
     swing_order: int = 2,
-    min_rsi_diff: float = 5.0,
+    min_rsi_diff: float = 6.0,
+    atr_multiplier: float = 0.3,
 ) -> Optional[DivergenceResult]:
     """
     Check for bullish divergence at `current_idx`.
@@ -145,8 +173,25 @@ def detect_bullish_divergence(
 
     current_rsi = rsi[current_idx]
     current_low = lows[current_idx]
+    current_atr = atr[current_idx]
 
-    if np.isnan(current_rsi):
+    if np.isnan(current_rsi) or np.isnan(current_atr):
+        return None
+
+    # Check if current_idx correctly forms a swing low
+    left_start = max(0, current_idx - swing_order)
+    right_end = min(len(lows), current_idx + swing_order + 1)
+    
+    if current_idx < left_start + swing_order:
+        return None
+        
+    is_swing = True
+    for j in range(left_start, right_end):
+        if j != current_idx and lows[j] <= current_low:
+            is_swing = False
+            break
+            
+    if not is_swing:
         return None
 
     search_start = max(0, current_idx - lookback)
@@ -172,6 +217,12 @@ def detect_bullish_divergence(
 
         # Bullish divergence: price LL + RSI HL
         if current_low < prior_low and current_rsi > prior_rsi:
+            
+            # Check price move vs ATR
+            price_move = prior_low - current_low
+            if price_move < (current_atr * atr_multiplier):
+                continue
+                
             if abs(current_rsi - prior_rsi) >= min_rsi_diff:
                 return DivergenceResult(
                     divergence_type="bullish",
