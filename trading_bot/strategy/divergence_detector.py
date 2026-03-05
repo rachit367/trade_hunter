@@ -31,6 +31,7 @@ def detect_bearish_divergence(
     current_idx: int,
     lookback: int = 10,
     swing_order: int = 2,
+    min_rsi_diff: float = 5.0,
 ) -> Optional[DivergenceResult]:
     """
     Check for bearish divergence at `current_idx`.
@@ -49,6 +50,8 @@ def detect_bearish_divergence(
         How many candles back to search for the prior swing high.
     swing_order : int
         Order parameter for swing detection.
+    min_rsi_diff : float
+        Minimum absolute difference in RSI to be considered a strong divergence.
 
     Returns
     -------
@@ -90,15 +93,16 @@ def detect_bearish_divergence(
 
         # Bearish divergence: price HH + RSI LH
         if current_high > prior_high and current_rsi < prior_rsi:
-            return DivergenceResult(
-                divergence_type="bearish",
-                current_idx=current_idx,
-                prior_idx=prior_idx,
-                current_price=current_high,
-                prior_price=prior_high,
-                current_rsi=current_rsi,
-                prior_rsi=prior_rsi,
-            )
+            if abs(prior_rsi - current_rsi) >= min_rsi_diff:
+                return DivergenceResult(
+                    divergence_type="bearish",
+                    current_idx=current_idx,
+                    prior_idx=prior_idx,
+                    current_price=current_high,
+                    prior_price=prior_high,
+                    current_rsi=current_rsi,
+                    prior_rsi=prior_rsi,
+                )
 
     return None
 
@@ -109,6 +113,7 @@ def detect_bullish_divergence(
     current_idx: int,
     lookback: int = 10,
     swing_order: int = 2,
+    min_rsi_diff: float = 5.0,
 ) -> Optional[DivergenceResult]:
     """
     Check for bullish divergence at `current_idx`.
@@ -127,6 +132,8 @@ def detect_bullish_divergence(
         How many candles back to search for the prior swing low.
     swing_order : int
         Order parameter for swing detection.
+    min_rsi_diff : float
+        Minimum absolute difference in RSI to be considered a strong divergence.
 
     Returns
     -------
@@ -165,14 +172,15 @@ def detect_bullish_divergence(
 
         # Bullish divergence: price LL + RSI HL
         if current_low < prior_low and current_rsi > prior_rsi:
-            return DivergenceResult(
-                divergence_type="bullish",
-                current_idx=current_idx,
-                prior_idx=prior_idx,
-                current_price=current_low,
-                prior_price=prior_low,
-                current_rsi=current_rsi,
-                prior_rsi=prior_rsi,
-            )
+            if abs(current_rsi - prior_rsi) >= min_rsi_diff:
+                return DivergenceResult(
+                    divergence_type="bullish",
+                    current_idx=current_idx,
+                    prior_idx=prior_idx,
+                    current_price=current_low,
+                    prior_price=prior_low,
+                    current_rsi=current_rsi,
+                    prior_rsi=prior_rsi,
+                )
 
     return None
