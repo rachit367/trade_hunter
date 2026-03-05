@@ -1,12 +1,11 @@
 """
-Data Loader — OHLCV data loading from CSV and Yahoo Finance.
+Data Loader — OHLCV data loading from CSV and Delta Exchange API.
 
 Provides a unified interface for loading price data into a standardized
 pandas DataFrame with columns: [Open, High, Low, Close, Volume].
 """
 
 import pandas as pd
-import yfinance as yf
 
 
 def load_csv(filepath: str) -> pd.DataFrame:
@@ -73,49 +72,37 @@ def load_csv(filepath: str) -> pd.DataFrame:
     return df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
 
 
-def fetch_live(
-    ticker: str = "BTC-USD",
-    period: str = "5d",
-    interval: str = "5m",
+def fetch_delta(
+    symbol: str = "BTCUSD",
+    resolution: str = "5m",
+    lookback_hours: int = 4,
 ) -> pd.DataFrame:
     """
-    Fetch OHLCV data from Yahoo Finance.
+    Fetch OHLCV data from Delta Exchange API.
 
     Parameters
     ----------
-    ticker : str
-        Ticker symbol (e.g. "BTC-USD", "AAPL").
-    period : str
-        Lookback period ("1d", "5d", "1mo", "3mo").
-        Note: yfinance limits 5m data to ~60 days.
-    interval : str
-        Candle interval (e.g. "5m", "15m", "1h").
+    symbol : str
+        Delta Exchange product symbol (e.g. "BTCUSD", "ETHUSD").
+    resolution : str
+        Candle resolution ("1m", "5m", "15m", "1h", "1d").
+    lookback_hours : int
+        How many hours of history to fetch.
 
     Returns
     -------
     pd.DataFrame
         OHLCV DataFrame with DatetimeIndex.
     """
-    print(f"  Downloading {ticker} | period={period} | interval={interval} ...")
-    data = yf.download(
-        ticker,
-        period=period,
-        interval=interval,
-        progress=False,
-        auto_adjust=True,
+    from trading_bot.exchange.delta_connector import DeltaConnector
+
+    print(f"  Fetching {symbol} from Delta Exchange | resolution={resolution} | lookback={lookback_hours}h ...")
+    connector = DeltaConnector()
+    return connector.fetch_candles(
+        symbol=symbol,
+        resolution=resolution,
+        lookback_hours=lookback_hours,
     )
-
-    if data.empty:
-        raise ValueError(f"No data for {ticker} (period={period}, interval={interval})")
-
-    # Flatten MultiIndex columns if present (yfinance quirk for single tickers)
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-
-    data.index.name = "Datetime"
-    data.sort_index(inplace=True)
-
-    return data[["Open", "High", "Low", "Close", "Volume"]].astype(float)
 
 
 def generate_sample_data(n_candles: int = 500, seed: int = 42) -> pd.DataFrame:
