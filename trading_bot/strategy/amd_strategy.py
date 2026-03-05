@@ -79,7 +79,7 @@ class StrategyConfig:
     # Divergence
     divergence_lookback: int = 10
     swing_order: int = 2
-    min_rsi_diff: float = 6.0        # Minimum RSI difference to consider valid
+    min_rsi_diff: float = 5.0        # Minimum RSI difference to consider valid
     divergence_atr_multiplier: float = 0.3 # Minimum price move in terms of ATR -> divergence valid
 
     # Risk management
@@ -89,6 +89,30 @@ class StrategyConfig:
 
     # Post-range scan window
     max_scan_after_range: int = 20   # Max candles after range to look for breakout
+
+
+def detect_liquidity_sweep(df: pd.DataFrame, i: int, lookback: int = 10) -> Optional[str]:
+    """
+    Check if the current candle forms a liquidity sweep.
+    A sweep is when price wicks beyond a local high/low but closes back inside.
+    """
+    if i < lookback:
+        return None
+        
+    prev_high = df["High"].iloc[i-lookback:i].max()
+    prev_low = df["Low"].iloc[i-lookback:i].min()
+    
+    candle = df.iloc[i]
+    
+    # Bearish sweep: highs wick above prior local max, but body closes below it
+    if candle["High"] > prev_high and candle["Close"] < prev_high:
+        return "bearish"
+        
+    # Bullish sweep: lows wick below prior local min, but body closes above it
+    if candle["Low"] < prev_low and candle["Close"] > prev_low:
+        return "bullish"
+        
+    return None
 
 
 def generate_signals(
@@ -155,17 +179,19 @@ def generate_signals(
             # --- Breakout ABOVE range high ---
             breakout_level = rng.range_high * (1 + config.breakout_pct / 100.0)
             if highs[i] > breakout_level:
-                div = detect_bearish_divergence(
-                    highs, rsi, atr, i,
-                    lookback=config.divergence_lookback,
-                    swing_order=config.swing_order,
-                    min_rsi_diff=config.min_rsi_diff,
-                    atr_multiplier=config.divergence_atr_multiplier,
-                )
-                if div is not None:
-                    if df.index[i] in seen_times:
-                        signal_found = True
-                        continue
+                sweep = detect_liquidity_sweep(df, i, lookback=10)
+                if sweep == "bearish":
+                    div = detect_bearish_divergence(
+                        highs, rsi, atr, i,
+                        lookback=config.divergence_lookback,
+                        swing_order=config.swing_order,
+                        min_rsi_diff=config.min_rsi_diff,
+                        atr_multiplier=config.divergence_atr_multiplier,
+                    )
+                    if div is not None:
+                        if df.index[i] in seen_times:
+                            signal_found = True
+                            continue
 
                     # SHORT signal — manipulation of buy-side liquidity
                     manipulation_high = highs[i]
@@ -201,17 +227,19 @@ def generate_signals(
             # --- Breakdown BELOW range low ---
             breakdown_level = rng.range_low * (1 - config.breakout_pct / 100.0)
             if lows[i] < breakdown_level:
-                div = detect_bullish_divergence(
-                    lows, rsi, atr, i,
-                    lookback=config.divergence_lookback,
-                    swing_order=config.swing_order,
-                    min_rsi_diff=config.min_rsi_diff,
-                    atr_multiplier=config.divergence_atr_multiplier,
-                )
-                if div is not None:
-                    if df.index[i] in seen_times:
-                        signal_found = True
-                        continue
+                sweep = detect_liquidity_sweep(df, i, lookback=10)
+                if sweep == "bullish":
+                    div = detect_bullish_divergence(
+                        lows, rsi, atr, i,
+                        lookback=config.divergence_lookback,
+                        swing_order=config.swing_order,
+                        min_rsi_diff=config.min_rsi_diff,
+                        atr_multiplier=config.divergence_atr_multiplier,
+                    )
+                    if div is not None:
+                        if df.index[i] in seen_times:
+                            signal_found = True
+                            continue
 
                     # LONG signal — manipulation of sell-side liquidity
                     manipulation_low = lows[i]
