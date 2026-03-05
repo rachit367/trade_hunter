@@ -25,6 +25,7 @@ class TradeOutcome(Enum):
     WIN = "WIN"
     LOSS = "LOSS"
     OPEN = "OPEN"
+    TIME_EXIT = "TIME_EXIT"
 
 
 @dataclass
@@ -123,6 +124,7 @@ def run_backtest(
 
     highs = df["High"].values
     lows = df["Low"].values
+    closes = df["Close"].values
     n = len(df)
 
     balance = initial_balance
@@ -146,13 +148,45 @@ def run_backtest(
         exit_price = sig.entry_price
         exit_idx = sig.entry_idx
         exit_time = sig.entry_time
+        
+        # Trade Management State
+        break_even_moved = False
+        partial_taken = False
+        initial_sl = sig.stop_loss
+        current_sl = initial_sl
+        
+        # Helper R:R metrics
+        risk_per_unit = abs(sig.entry_price - initial_sl)
+        target_1_5r = sig.entry_price - (1.5 * risk_per_unit) if sig.direction == Direction.SHORT else sig.entry_price + (1.5 * risk_per_unit)
+        target_2_0r = sig.entry_price - (2.0 * risk_per_unit) if sig.direction == Direction.SHORT else sig.entry_price + (2.0 * risk_per_unit)
 
         for j in range(sig.entry_idx + 1, n):
+            
+            # --- Time-Based Exit ---
+            if j - sig.entry_idx >= 24:
+                outcome = TradeOutcome.TIME_EXIT
+                exit_price = closes[j]
+                exit_idx = j
+                exit_time = df.index[j]
+                break
+
             if sig.direction == Direction.SHORT:
-                # SL hit? (price goes up to SL)
-                if highs[j] >= sig.stop_loss:
-                    outcome = TradeOutcome.LOSS
-                    exit_price = sig.stop_loss
+                # Break-Even Check (1.5R)
+                if not break_even_moved and lows[j] <= target_1_5r:
+                    current_sl = sig.entry_price
+                    break_even_moved = True
+                    
+                # Partial Profits Check (2.0R)
+                if not partial_taken and lows[j] <= target_2_0r:
+                    partial_taken = True
+                    partial_pnl = (sig.entry_price - target_2_0r) * (pos_size * 0.5)
+                    balance += partial_pnl
+                    pos_size *= 0.5
+
+                # SL hit? (price goes up to active SL)
+                if highs[j] >= current_sl:
+                    outcome = TradeOutcome.LOSS if current_sl == initial_sl else TradeOutcome.WIN # BE counts as marginal win/scratch
+                    exit_price = current_sl
                     exit_idx = j
                     exit_time = df.index[j]
                     break
@@ -165,10 +199,22 @@ def run_backtest(
                     break
 
             elif sig.direction == Direction.LONG:
-                # SL hit? (price drops to SL)
-                if lows[j] <= sig.stop_loss:
-                    outcome = TradeOutcome.LOSS
-                    exit_price = sig.stop_loss
+                # Break-Even Check (1.5R)
+                if not break_even_moved and highs[j] >= target_1_5r:
+                    current_sl = sig.entry_price
+                    break_even_moved = True
+                    
+                # Partial Profits Check (2.0R)
+                if not partial_taken and highs[j] >= target_2_0r:
+                    partial_taken = True
+                    partial_pnl = (target_2_0r - sig.entry_price) * (pos_size * 0.5)
+                    balance += partial_pnl
+                    pos_size *= 0.5
+
+                # SL hit? (price drops to active SL)
+                if lows[j] <= current_sl:
+                    outcome = TradeOutcome.LOSS if current_sl == initial_sl else TradeOutcome.WIN
+                    exit_price = current_sl
                     exit_idx = j
                     exit_time = df.index[j]
                     break
