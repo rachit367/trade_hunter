@@ -138,7 +138,13 @@ class LiveTrader:
         latest_signal = signals[-1]
         logger.info("Latest signal: %s", latest_signal)
 
-        # 3. Check for duplicate (same timestamp as last executed)
+        # 3. Check if the signal is fresh (within the last 2 candles)
+        if latest_signal.entry_idx < len(df) - 2:
+            logger.info("Latest signal is too old (idx %d vs current %d) -- skipping", 
+                        latest_signal.entry_idx, len(df) - 1)
+            return None
+
+        # 4. Check for duplicate (same timestamp as last executed)
         if self._last_signal_time == latest_signal.entry_time:
             logger.info("Signal already processed -- skipping")
             return None
