@@ -274,10 +274,15 @@ def generate_signals(
     )
 
     signals: List[TradeSignal] = []
-    seen_times = set()
+    seen_sweep_indices = set()
+    seen_entry_indices = set()
+    last_trade_range_idx = -1
 
     # Step 3–5: For each range, detect breakout + divergence
     for rng in ranges:
+        if rng.start_idx == last_trade_range_idx:
+            continue
+            
         scan_start = rng.end_idx + 1
         scan_end = min(scan_start + config.max_scan_after_range, n)
         signal_found = False
@@ -291,6 +296,10 @@ def generate_signals(
             if highs[i] > breakout_level:
                 sweep = detect_liquidity_sweep(df, i, lookback=10)
                 if sweep == "bearish":
+                    sweep_idx = i
+                    if sweep_idx in seen_sweep_indices:
+                        continue
+                        
                     div = detect_bearish_divergence(
                         highs, rsi, atr, i,
                         lookback=config.divergence_lookback,
@@ -305,11 +314,6 @@ def generate_signals(
                     if div is not None and div.swings > config.max_divergence_swings:
                         continue # Too exhausted
 
-                    if div is not None:
-                        if df.index[i] in seen_times:
-                            signal_found = True
-                            continue
-
                     # SHORT signal — manipulation of buy-side liquidity
                     # Check Trend at the START of the range (before manipulation)
                     bias = get_htf_bias(df, rng.start_idx, config)
@@ -320,7 +324,8 @@ def generate_signals(
                         continue # Only take SHORTs if bias is bearish or neutral
 
                     manipulation_high = highs[i]
-                    original_sl = manipulation_high * (1 + config.sl_buffer_pct / 100.0)
+                    original_sl = max(manipulation_high, rng.range_high)
+                    sl = original_sl * (1 + config.sl_buffer_pct / 100.0)
                     
                     if not config.require_fvg:
                         entry = closes[i]
@@ -354,9 +359,13 @@ def generate_signals(
                             continue # Setup valid, but price never retraced
                             
                         entry = entry_price
-                        sl = original_sl
+                        if sl <= entry:
+                            sl = entry * 1.0015
                         tp = rng.range_low
                         i = entry_idx # Fast-forward the outer index for timeline consistency
+
+                    if entry_idx in seen_entry_indices:
+                        continue
 
                     risk = abs(entry - sl)
                     reward = entry - tp
@@ -378,7 +387,9 @@ def generate_signals(
                         range_end_idx=rng.end_idx,
                         divergence=div,
                     ))
-                    seen_times.add(df.index[entry_idx])
+                    seen_sweep_indices.add(sweep_idx)
+                    seen_entry_indices.add(entry_idx)
+                    last_trade_range_idx = rng.start_idx
                     signal_found = True
                     break
 
@@ -387,6 +398,10 @@ def generate_signals(
             if lows[i] < breakdown_level:
                 sweep = detect_liquidity_sweep(df, i, lookback=10)
                 if sweep == "bullish":
+                    sweep_idx = i
+                    if sweep_idx in seen_sweep_indices:
+                        continue
+                        
                     div = detect_bullish_divergence(
                         lows, rsi, atr, i,
                         lookback=config.divergence_lookback,
@@ -401,11 +416,6 @@ def generate_signals(
                     if div is not None and div.swings > config.max_divergence_swings:
                         continue # Too exhausted
 
-                    if div is not None:
-                        if df.index[i] in seen_times:
-                            signal_found = True
-                            continue
-
                     # LONG signal — manipulation of sell-side liquidity
                     # Check Trend at the START of the range (before manipulation)
                     bias = get_htf_bias(df, rng.start_idx, config)
@@ -416,7 +426,8 @@ def generate_signals(
                         continue # Only take LONGs if bias is bullish or neutral
 
                     manipulation_low = lows[i]
-                    original_sl = manipulation_low * (1 - config.sl_buffer_pct / 100.0)
+                    original_sl = min(manipulation_low, rng.range_low)
+                    sl = original_sl * (1 - config.sl_buffer_pct / 100.0)
                     
                     if not config.require_fvg:
                         entry = closes[i]
@@ -450,9 +461,13 @@ def generate_signals(
                             continue # Setup valid, but price never retraced
                             
                         entry = entry_price
-                        sl = original_sl
+                        if sl >= entry:
+                            sl = entry * 0.9985
                         tp = rng.range_high
                         i = entry_idx # Fast-forward the outer index
+
+                    if entry_idx in seen_entry_indices:
+                        continue
 
                     risk = abs(entry - sl)
                     reward = tp - entry
@@ -474,7 +489,9 @@ def generate_signals(
                         range_end_idx=rng.end_idx,
                         divergence=div,
                     ))
-                    seen_times.add(df.index[entry_idx])
+                    seen_sweep_indices.add(sweep_idx)
+                    seen_entry_indices.add(entry_idx)
+                    last_trade_range_idx = rng.start_idx
                     signal_found = True
                     break
 
