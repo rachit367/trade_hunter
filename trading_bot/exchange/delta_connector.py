@@ -65,7 +65,16 @@ class DeltaConnector:
 
         # Cache for product lookups
         self._product_cache: Dict[str, Dict] = {}
+        
+        # Simulated balance for dry-runs
+        self._dry_run_balance = 10000.0
+        
         logger.info("Delta Exchange connector initialized (base_url=%s)", self.base_url)
+
+    def update_dry_run_balance(self, pnl: float):
+        """Update the simulated balance after a virtual trade closes."""
+        self._dry_run_balance += pnl
+        logger.info("Dry run balance updated by $%.2f. New total: $%.2f", pnl, self._dry_run_balance)
 
     # ------------------------------------------------------------------
     # Data Fetching
@@ -237,17 +246,28 @@ class DeltaConnector:
             Position info with 'size', 'entry_price', 'side', etc.
             Returns None if no position is open.
         """
-        try:
-            position = self.client.get_position(product_id)
-            if position and int(position.get("size", 0)) != 0:
-                logger.info("Open position: size=%s, side=%s, entry=%s",
-                           position.get("size"), position.get("side"),
-                           position.get("entry_price"))
-                return position
-            return None
-        except Exception as e:
-            logger.error("Failed to get position: %s", e)
-            return None
+        for attempt in range(3):
+            try:
+                position = self.client.get_position(product_id)
+                if position and int(position.get("size", 0)) != 0:
+                    logger.info("Open position: size=%s, side=%s, entry=%s",
+                               position.get("size"), position.get("side"),
+                               position.get("entry_price"))
+                    return position
+                return None
+            except Exception as e:
+                err_str = str(e)
+                if "Connection aborted" in err_str or "RemoteDisconnected" in err_str or "ConnectionResetError" in err_str:
+                    logger.warning("Connection aborted while fetching position (Attempt %d/3). Retrying...", attempt + 1)
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                
+                logger.error("Failed to get position: %s", e)
+                # Raise exception so LiveTrader doesn't assume size=0 and double-enter!
+                raise RuntimeError(f"Could not verify open position state: {e}")
+        
+        # If all retries failed
+        raise RuntimeError("Failed to verify position after 3 network retries")
 
     # ------------------------------------------------------------------
     # Order Placement

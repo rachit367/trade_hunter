@@ -3,8 +3,12 @@
 # Auto-restart wrapper script for Render
 # This ensures that if the bot crashes, it waits a few seconds and restarts.
 
-# Read configuration from env vars (set in render.yaml or dashboard)
-MODE=${BOT_MODE:-live}
+# If a local .env file exists, load it directly so local runs mimic server runs
+if [ -f ".env" ]; then
+    export $(cat .env | tr -d '\r' | grep -v '^#' | xargs)
+fi
+MODE=${BOT_MODE:-dry-run}
+MODE=$(echo "$MODE" | tr -d '\r')
 # Fallback to comma-separated symbols if multiple are wanted, e.g., "BTCUSD,ETHUSD"
 SYMBOLS=${TRADE_SYMBOL:-BTCUSD}
 INTERVAL=${TRADE_INTERVAL:-300}
@@ -26,15 +30,15 @@ run_bot() {
         echo "[$(date)] Launching bot in $MODE mode for $sym..."
         
         if [ "$MODE" = "live" ]; then
-            python main.py --mode live --symbol "$sym" --loop-interval "$INTERVAL" --no-dry-run
+            venv/Scripts/python.exe main.py --mode live --symbol "$sym" --loop-interval "$INTERVAL" --no-dry-run
         elif [ "$MODE" = "dry-run" ]; then
-            python main.py --mode live --symbol "$sym" --loop-interval "$INTERVAL" --dry-run
+            venv/Scripts/python.exe main.py --mode live --symbol "$sym" --loop-interval "$INTERVAL" --dry-run
         elif [ "$MODE" = "backtest" ]; then
-            python main.py --mode backtest --symbol "$sym" --lookback 24
+            venv/Scripts/python.exe main.py --mode backtest --symbol "$sym" --lookback 24
             # Backtest finishes immediately, no need to loop
             break 
         elif [ "$MODE" = "signals" ]; then
-            python main.py --mode signals --symbol "$sym" --lookback 12
+            venv/Scripts/python.exe main.py --mode signals --symbol "$sym" --lookback 12
             break
         else
             echo "Unknown BOT_MODE: $MODE. Exiting."
@@ -61,6 +65,20 @@ for sym in "${SYMBOL_ARRAY[@]}"; do
     run_bot "$sym" &
     PIDS="$PIDS $!"
 done
+
+# Cleanup function to gracefully stop all background bots
+cleanup() {
+    echo ""
+    echo "[$(date)] Stopping all background bots..."
+    # Send SIGTERM to python processes so they print final balance
+    kill -TERM $PIDS 2>/dev/null
+    wait $PIDS 2>/dev/null
+    echo "All bots gracefully stopped."
+    exit 0
+}
+
+# Trap SIGINT (Ctrl+C) and SIGTERM (Render shutdown) so we can gracefully exit
+trap cleanup SIGINT SIGTERM
 
 # Wait for all background processes to finish
 wait $PIDS

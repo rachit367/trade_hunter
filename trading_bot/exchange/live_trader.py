@@ -89,6 +89,8 @@ class LiveTrader:
         logger.info("  Tick Size  : %s", self.tick_size)
         logger.info("  Lookback   : %d hours", lookback_hours)
         logger.info("  Interval   : %d seconds", loop_interval)
+        if dry_run:
+            logger.info("  Balance    : $%.2f (Simulated)", self.connector._dry_run_balance)
         logger.info("=" * 50)
 
     def run_once(self) -> Optional[TradeSignal]:
@@ -144,9 +146,15 @@ class LiveTrader:
         # 4. Check for existing position
         position = self.connector.get_open_position(self.product_id)
         if position is not None:
-            logger.info("Position already open (size=%s) -- skipping new signal",
-                       position.get("size"))
-            return None
+            current_size = abs(int(float(position.get("size", 0))))
+            # Ignore baseline manual positions (e.g., holding 2 permanent BTC contracts)
+            baseline = 2 if self.symbol == "BTCUSD" else 0
+            
+            if current_size > baseline:
+                logger.info("Position already open (size=%s) -- skipping new signal", current_size)
+                return None
+            else:
+                logger.info("Baseline manual position detected (size=%s). Allowing bot to trade.", current_size)
 
         # 5. Execute or log the signal
         if self.dry_run:
@@ -182,14 +190,38 @@ class LiveTrader:
                 elif low <= pos.take_profit: tp_hit = True
                 
             if sl_hit or tp_hit:
-                print()
-                print("  " + "=" * 50)
-                if tp_hit:
-                    print(f"  [{self.symbol}] [DRY RUN] TRADE CLOSED - TAKE PROFIT HIT! (+{pos.rr_ratio}R)")
-                    logger.info("Virtual %s trade closed: TAKE PROFIT +%sR", pos.direction.value, pos.rr_ratio)
+                # Use Risk-based position size calculations
+                # Risk Amount = Account Balance * Risk %
+                wallet_balance = self.connector._dry_run_balance
+                risk_amount = wallet_balance * (self.config.risk_per_trade_pct / 100.0)
+                
+                # SL Distance
+                risk_per_contract = abs(pos.entry_price - pos.stop_loss)
+                if risk_per_contract <= 0:
+                    size = 1
                 else:
+                    size = max(1, int(risk_amount / risk_per_contract))
+
+                if tp_hit:
+                    # Profit scenario
+                    price_delta = abs(pos.entry_price - pos.take_profit)
+                    pnl = size * price_delta
+                    self.connector.update_dry_run_balance(pnl)
+                    print()
+                    print("  " + "=" * 50)
+                    print(f"  [{self.symbol}] [DRY RUN] TRADE CLOSED - TAKE PROFIT HIT! (+{pos.rr_ratio}R)")
+                    print(f"  [{self.symbol}] Profit: +${pnl:.2f} | New Balance: ${self.connector._dry_run_balance:.2f}")
+                    logger.info("Virtual %s trade closed: TAKE PROFIT +%sR (+$%s)", pos.direction.value, pos.rr_ratio, pnl)
+                else:
+                    # Loss scenario
+                    price_delta = abs(pos.entry_price - pos.stop_loss)
+                    pnl = -1 * (size * price_delta)
+                    self.connector.update_dry_run_balance(pnl)
+                    print()
+                    print("  " + "=" * 50)
                     print(f"  [{self.symbol}] [DRY RUN] TRADE CLOSED - STOP LOSS HIT! (-1.0R)")
-                    logger.info("Virtual %s trade closed: STOP LOSS -1.0R", pos.direction.value)
+                    print(f"  [{self.symbol}] Loss: ${pnl:.2f} | New Balance: ${self.connector._dry_run_balance:.2f}")
+                    logger.info("Virtual %s trade closed: STOP LOSS -1.0R ($%s)", pos.direction.value, pnl)
                 print("  " + "=" * 50)
                 
                 self._virtual_position = None
@@ -290,6 +322,15 @@ class LiveTrader:
         Fetches candles, generates signals, and optionally executes trades
         every `loop_interval` seconds. Press Ctrl+C to stop.
         """
+        import signal
+        def handle_sigterm(signum, frame):
+            raise KeyboardInterrupt()
+            
+        try:
+            signal.signal(signal.SIGTERM, handle_sigterm)
+        except (ValueError, AttributeError):
+            pass
+
         mode_label = "DRY RUN" if self.dry_run else "** LIVE TRADING **"
         print()
         print("=" * 60)
@@ -318,6 +359,8 @@ class LiveTrader:
 
             except KeyboardInterrupt:
                 print(f"\n\n  [{self.symbol}] [STOPPED] LiveTrader stopped by user.")
+                if self.dry_run:
+                    print(f"  [{self.symbol}] Final Session Balance [{mode_label}]: ${self.connector._dry_run_balance:.2f}")
                 logger.info("LiveTrader stopped by KeyboardInterrupt")
                 break
             except Exception as e:
