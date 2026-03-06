@@ -77,6 +77,9 @@ class LiveTrader:
 
         # Track last signal to avoid duplicates
         self._last_signal_time = None
+        
+        # Track active virtual dry-run position
+        self._virtual_position: Optional[TradeSignal] = None
 
         mode_label = "DRY RUN" if dry_run else "** LIVE **"
         logger.info("=" * 50)
@@ -113,6 +116,14 @@ class LiveTrader:
             logger.error("Failed to fetch candles: %s", e)
             return None
 
+        # Check virtual position outcome before finding new signals
+        if self.dry_run and self._virtual_position:
+            self._check_virtual_position(df)
+            if self._virtual_position:
+                logger.info("Virtual position still open. Waiting for resolution...")
+                print(f"  [{self.symbol}] Virtual trade still active. Waiting...")
+                return None
+
         # 2. Generate signals
         signals = generate_signals(df, self.config)
         logger.info("Signals detected: %d", len(signals))
@@ -146,6 +157,44 @@ class LiveTrader:
         self._last_signal_time = latest_signal.entry_time
         return latest_signal
 
+    def _check_virtual_position(self, df):
+        """Check if an open virtual position hit SL or TP."""
+        pos = self._virtual_position
+        if not pos:
+            return
+
+        # Check candles that formed AFTER the signal was generated
+        mask = df.index > pos.entry_time
+        recent_df = df[mask]
+        
+        for dt, row in recent_df.iterrows():
+            high = row["High"]
+            low = row["Low"]
+            
+            sl_hit = False
+            tp_hit = False
+            
+            if pos.direction == Direction.LONG:
+                if low <= pos.stop_loss: sl_hit = True
+                elif high >= pos.take_profit: tp_hit = True
+            else: # SHORT
+                if high >= pos.stop_loss: sl_hit = True
+                elif low <= pos.take_profit: tp_hit = True
+                
+            if sl_hit or tp_hit:
+                print()
+                print("  " + "=" * 50)
+                if tp_hit:
+                    print(f"  [{self.symbol}] [DRY RUN] TRADE CLOSED - TAKE PROFIT HIT! (+{pos.rr_ratio}R)")
+                    logger.info("Virtual %s trade closed: TAKE PROFIT +%sR", pos.direction.value, pos.rr_ratio)
+                else:
+                    print(f"  [{self.symbol}] [DRY RUN] TRADE CLOSED - STOP LOSS HIT! (-1.0R)")
+                    logger.info("Virtual %s trade closed: STOP LOSS -1.0R", pos.direction.value)
+                print("  " + "=" * 50)
+                
+                self._virtual_position = None
+                return
+
     def _log_dry_run(self, signal: TradeSignal):
         """Log a signal without placing any orders."""
         logger.info("=" * 40)
@@ -165,13 +214,16 @@ class LiveTrader:
         # Print to console too
         print()
         print("  " + "=" * 50)
-        print(f"  [DRY RUN] SIGNAL DETECTED")
-        print(f"  Direction  : {signal.direction.value}")
+        print(f"  [{self.symbol}] [DRY RUN] SIGNAL DETECTED")
+        print(f"  [{self.symbol}] Direction  : {signal.direction.value}")
         print(f"  Entry      : {signal.entry_price:.2f}")
         print(f"  Stop Loss  : {signal.stop_loss:.2f}")
         print(f"  Take Profit: {signal.take_profit:.2f}")
         print(f"  R:R Ratio  : {signal.rr_ratio:.1f}")
         print("  " + "=" * 50)
+        
+        # Save as active virtual position
+        self._virtual_position = signal
 
     def _execute_signal(self, signal: TradeSignal):
         """Place a real bracket order on Delta Exchange."""
@@ -220,8 +272,8 @@ class LiveTrader:
 
             print()
             print("  " + "=" * 50)
-            print(f"  [LIVE] ORDER PLACED")
-            print(f"  Direction  : {signal.direction.value}")
+            print(f"  [{self.symbol}] [LIVE] ORDER PLACED")
+            print(f"  [{self.symbol}] Direction  : {signal.direction.value}")
             print(f"  Size       : {size} contracts")
             print(f"  Stop Loss  : {signal.stop_loss:.2f}")
             print(f"  Take Profit: {signal.take_profit:.2f}")
@@ -251,7 +303,7 @@ class LiveTrader:
             try:
                 cycle += 1
                 logger.info("=== Cycle %d ===", cycle)
-                print(f"\n  [Cycle {cycle}] {datetime.now().strftime('%H:%M:%S')} -- Scanning...", end="")
+                print(f"\n  [{self.symbol}] [Cycle {cycle}] {datetime.now().strftime('%H:%M:%S')} -- Scanning...", end="")
 
                 signal = self.run_once()
 
@@ -265,13 +317,13 @@ class LiveTrader:
                 time.sleep(self.loop_interval)
 
             except KeyboardInterrupt:
-                print("\n\n  [STOPPED] LiveTrader stopped by user.")
+                print(f"\n\n  [{self.symbol}] [STOPPED] LiveTrader stopped by user.")
                 logger.info("LiveTrader stopped by KeyboardInterrupt")
                 break
             except Exception as e:
                 logger.error("Unexpected error in cycle %d: %s", cycle, e)
-                print(f"\n  [FATAL ERROR] {e}")
-                print("  Exiting with status code 1 so the host (Render) can auto-restart the service.")
+                print(f"\n  [{self.symbol}] [FATAL ERROR] {e}")
+                print(f"  [{self.symbol}] Exiting with status code 1 so the host (Render) can auto-restart the service.")
                 sys.exit(1)
 
 

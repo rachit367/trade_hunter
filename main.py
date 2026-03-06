@@ -209,7 +209,8 @@ def _run_live(args, config):
     """Start the Delta Exchange live trading loop."""
     from trading_bot.exchange.live_trader import LiveTrader, setup_logging
 
-    setup_logging()
+    log_filename = f"trading_{args.symbol.lower()}.log"
+    setup_logging(log_filename)
 
     mode_label = "DRY RUN" if args.dry_run else "** LIVE TRADING **"
     print("-" * 60)
