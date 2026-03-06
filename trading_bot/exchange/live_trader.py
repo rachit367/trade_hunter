@@ -265,8 +265,9 @@ class LiveTrader:
                 break
             except Exception as e:
                 logger.error("Unexpected error in cycle %d: %s", cycle, e)
-                print(f"\n  [ERROR] {e} -- retrying in {self.loop_interval}s")
-                time.sleep(self.loop_interval)
+                print(f"\n  [FATAL ERROR] {e}")
+                print("  Exiting with status code 1 so the host (Render) can auto-restart the service.")
+                sys.exit(1)
 
 
 def setup_logging(log_file: str = "trading_bot.log"):

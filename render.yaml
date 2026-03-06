@@ -1,0 +1,21 @@
+services:
+  - type: worker
+    name: trade-hunter-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "bash start.sh"
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "true"
+      # IMPORTANT: Add these securely via the Render Dashboard
+      - key: DELTA_API_KEY
+        sync: false
+      - key: DELTA_API_SECRET
+        sync: false
+      - key: DELTA_BASE_URL
+        value: "https://api.india.delta.exchange"
+      # Strategy configuration overrides
+      - key: TRADE_SYMBOL
+        value: "BTCUSD"
+      - key: TRADE_INTERVAL
+        value: "300" # 5 minutes in seconds

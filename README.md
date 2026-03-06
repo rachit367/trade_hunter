@@ -143,6 +143,32 @@ python main.py --mode live --symbol BTCUSD --no-dry-run
 
 ---
 
+## ☁️ Deployment (Render)
+
+This bot is configured to run 24/7 as a **Background Worker** on [Render](https://render.com).
+
+### Features:
+- Automatically restarts if the process crashes.
+- Pulls configuration directly from the Render dashboard.
+
+### Steps to Deploy:
+1. Push this repository to GitHub.
+2. Log into Render and click **New** > **Background Worker**.
+3. Connect your GitHub repository.
+4. Render will automatically detect the settings from `render.yaml`:
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `bash start.sh`
+5. **IMPORTANT:** In the Render dashboard for your worker, go to **Environment** and add:
+   - `DELTA_API_KEY` (Your API Key)
+   - `DELTA_API_SECRET` (Your API Secret)
+     *(Do not commit these to GitHub. Add them directly in Render!)*
+6. (Optional) Override defaults in the Environment tab:
+   - `TRADE_SYMBOL` (default: BTCUSD)
+   - `TRADE_INTERVAL` (default: 300)
+7. Click **Deploy**. The bot will launch and stay alive indefinitely.
+
+---
+
 ## 📂 Project Structure
 
 ```
