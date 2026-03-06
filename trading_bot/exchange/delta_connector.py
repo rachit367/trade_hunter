@@ -48,9 +48,9 @@ class DeltaConnector:
         """
         load_dotenv(env_path)
 
-        self.api_key = os.getenv("DELTA_API_KEY")
-        self.api_secret = os.getenv("DELTA_API_SECRET")
-        self.base_url = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange")
+        self.api_key = os.getenv("DELTA_API_KEY", "").strip()
+        self.api_secret = os.getenv("DELTA_API_SECRET", "").strip()
+        self.base_url = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").strip()
 
         if not self.api_key or not self.api_secret:
             raise ValueError(
@@ -203,14 +203,14 @@ class DeltaConnector:
     # Wallet & Positions
     # ------------------------------------------------------------------
 
-    def get_balance(self, asset_id: int = 5) -> Optional[Dict]:
+    def get_balance(self, asset_id: int = 14) -> Optional[Dict]:
         """
         Get wallet balance for a specific asset.
 
         Parameters
         ----------
         asset_id : int
-            Asset ID (5 = USDT on Delta Exchange India).
+            Asset ID (14 = USD on Delta Exchange India).
 
         Returns
         -------
