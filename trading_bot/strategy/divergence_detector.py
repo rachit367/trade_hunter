@@ -23,6 +23,7 @@ class DivergenceResult:
     prior_price: float       # Price at prior swing
     current_rsi: float       # RSI at current candle
     prior_rsi: float         # RSI at prior swing
+    swings: int              # Number of consecutive swings holding the divergence
 
 
 def detect_bearish_divergence(
@@ -32,8 +33,9 @@ def detect_bearish_divergence(
     current_idx: int,
     lookback: int = 10,
     swing_order: int = 2,
-    min_rsi_diff: float = 6.0,
-    atr_multiplier: float = 0.3,
+    min_rsi_diff: float = 0.0,
+    atr_multiplier: float = 0.7,
+    min_swings: int = 2,
 ) -> Optional[DivergenceResult]:
     """
     Check for bearish divergence at `current_idx`.
@@ -53,7 +55,11 @@ def detect_bearish_divergence(
     swing_order : int
         Order parameter for swing detection.
     min_rsi_diff : float
-        Minimum absolute difference in RSI to be considered a strong divergence.
+        Minimum absolute difference in RSI to be considered a strong divergence (Deprecated in multi-swing, defaults 0.0).
+    atr_multiplier : float
+        Initial price move must exceed atr * multiplier.
+    min_swings : int
+        Minimum number of consecutive divergence swings to consider valid.
 
     Returns
     -------
@@ -104,6 +110,8 @@ def detect_bearish_divergence(
         swing_high_indices = [max_idx]
 
     # Check each prior swing high for divergence
+    best_divergence = None
+    
     for prior_idx in reversed(swing_high_indices):  # Most recent first
         prior_high = highs[prior_idx]
         prior_rsi = rsi[prior_idx]
@@ -114,23 +122,56 @@ def detect_bearish_divergence(
         # Bearish divergence: price HH + RSI LH
         if current_high > prior_high and current_rsi < prior_rsi:
             
-            # Check price move vs ATR
+            # Check initial price move vs ATR
             price_move = current_high - prior_high
             if price_move < (current_atr * atr_multiplier):
                 continue
+                
+            # If we optionally enforce RSI diff
+            if abs(prior_rsi - current_rsi) < min_rsi_diff:
+                continue
 
-            if abs(prior_rsi - current_rsi) >= min_rsi_diff:
-                return DivergenceResult(
-                    divergence_type="bearish",
-                    current_idx=current_idx,
-                    prior_idx=prior_idx,
-                    current_price=current_high,
-                    prior_price=prior_high,
-                    current_rsi=current_rsi,
-                    prior_rsi=prior_rsi,
-                )
+            # We found at least a 2-point divergence. 
+            # Now trace further back to see how many swings hold this pattern.
+            swings_count = 2 
+            
+            # The reference points for the next loop backward
+            ref_high = prior_high
+            ref_rsi = prior_rsi
+            
+            # Continue checking older swings in the list
+            older_swing_indices = [idx for idx in reversed(swing_high_indices) if idx < prior_idx]
+            
+            for older_idx in older_swing_indices:
+                older_high = highs[older_idx]
+                older_rsi = rsi[older_idx]
+                
+                if np.isnan(older_rsi):
+                    continue
+                    
+                # To extend the bearish divergence, older high must be lower, and older RSI must be higher
+                if ref_high > older_high and ref_rsi < older_rsi:
+                    swings_count += 1
+                    ref_high = older_high
+                    ref_rsi = older_rsi
+                else:
+                    break   # Sequence broken
+            
+            if swings_count >= min_swings:
+                # We overwrite with the strongest divergence we find natively
+                if best_divergence is None or swings_count > best_divergence.swings:
+                    best_divergence = DivergenceResult(
+                        divergence_type="bearish",
+                        current_idx=current_idx,
+                        prior_idx=prior_idx,
+                        current_price=current_high,
+                        prior_price=prior_high,
+                        current_rsi=current_rsi,
+                        prior_rsi=prior_rsi,
+                        swings=swings_count,
+                    )
 
-    return None
+    return best_divergence
 
 
 def detect_bullish_divergence(
@@ -140,8 +181,9 @@ def detect_bullish_divergence(
     current_idx: int,
     lookback: int = 10,
     swing_order: int = 2,
-    min_rsi_diff: float = 6.0,
-    atr_multiplier: float = 0.3,
+    min_rsi_diff: float = 0.0,
+    atr_multiplier: float = 0.7,
+    min_swings: int = 3,
 ) -> Optional[DivergenceResult]:
     """
     Check for bullish divergence at `current_idx`.
@@ -162,6 +204,10 @@ def detect_bullish_divergence(
         Order parameter for swing detection.
     min_rsi_diff : float
         Minimum absolute difference in RSI to be considered a strong divergence.
+    atr_multiplier : float
+        Initial price move must exceed atr * multiplier.
+    min_swings : int
+        Minimum number of consecutive divergence swings to consider valid.
 
     Returns
     -------
@@ -208,6 +254,8 @@ def detect_bullish_divergence(
             return None
         swing_low_indices = [min_idx]
 
+    best_divergence = None
+    
     for prior_idx in reversed(swing_low_indices):
         prior_low = lows[prior_idx]
         prior_rsi = rsi[prior_idx]
@@ -223,15 +271,44 @@ def detect_bullish_divergence(
             if price_move < (current_atr * atr_multiplier):
                 continue
                 
-            if abs(current_rsi - prior_rsi) >= min_rsi_diff:
-                return DivergenceResult(
-                    divergence_type="bullish",
-                    current_idx=current_idx,
-                    prior_idx=prior_idx,
-                    current_price=current_low,
-                    prior_price=prior_low,
-                    current_rsi=current_rsi,
-                    prior_rsi=prior_rsi,
-                )
+            if abs(current_rsi - prior_rsi) < min_rsi_diff:
+                continue
 
-    return None
+            # We found at least a 2-point divergence. 
+            # Now trace further back to see how many swings hold this pattern.
+            swings_count = 2 
+            
+            ref_low = prior_low
+            ref_rsi = prior_rsi
+            
+            older_swing_indices = [idx for idx in reversed(swing_low_indices) if idx < prior_idx]
+            
+            for older_idx in older_swing_indices:
+                older_low = lows[older_idx]
+                older_rsi = rsi[older_idx]
+                
+                if np.isnan(older_rsi):
+                    continue
+                    
+                # To extend bullish divergence, older low must be higher, older RSI must be lower
+                if ref_low < older_low and ref_rsi > older_rsi:
+                    swings_count += 1
+                    ref_low = older_low
+                    ref_rsi = older_rsi
+                else:
+                    break   # Sequence broken
+            
+            if swings_count >= min_swings:
+                if best_divergence is None or swings_count > best_divergence.swings:
+                    best_divergence = DivergenceResult(
+                        divergence_type="bullish",
+                        current_idx=current_idx,
+                        prior_idx=prior_idx,
+                        current_price=current_low,
+                        prior_price=prior_low,
+                        current_rsi=current_rsi,
+                        prior_rsi=prior_rsi,
+                        swings=swings_count,
+                    )
+
+    return best_divergence

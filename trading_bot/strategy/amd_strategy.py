@@ -76,11 +76,24 @@ class StrategyConfig:
     # Breakout
     breakout_pct: float = 0.10   # Min % beyond range to confirm breakout
 
+    strict_divergence: bool = False  # Require divergence to take a trade
+
+    # HTF Alignment Filter
+    htf_alignment_mode: str = "ema_50"            # "market_structure", "liquidity_draw", "ema_50", or "none"
+    htf_lookback: int = 12                        # Candles for MS (12 * 5m = 1H)
+    pdl_pdh_lookback: int = 288                   # Candles for PDH/PDL (288 * 5m = 24H)
+
     # Divergence
-    divergence_lookback: int = 10
+    divergence_lookback: int = 15
     swing_order: int = 2
-    min_rsi_diff: float = 5.0        # Minimum RSI difference to consider valid
-    divergence_atr_multiplier: float = 0.3 # Minimum price move in terms of ATR -> divergence valid
+    min_divergence_swings: int = 2   # Allow standard 2-point divergence
+    max_divergence_swings: int = 5   # Discard if trend is too exhausted (>= 6)
+    divergence_atr_multiplier: float = 0.5 # Relaxed ATR
+
+    # FVG / Entry Timing
+    require_fvg: bool = True
+    fvg_lookforward: int = 20        # Max candles to wait for an FVG to form after the sweep
+    retrace_lookforward: int = 20    # Max candles to wait for retracement into FVG
 
     # Risk management
     risk_reward_ratio: float = 2.0
@@ -104,14 +117,105 @@ def detect_liquidity_sweep(df: pd.DataFrame, i: int, lookback: int = 10) -> Opti
     
     candle = df.iloc[i]
     
-    # Bearish sweep: highs wick above prior local max, but body closes below it
-    if candle["High"] > prev_high and candle["Close"] < prev_high:
+    # Relaxed Bearish sweep: Wicks above local max. We don't mandate the exact same 5m 
+    # candle closes below, because the FVG requirement + Divergence handles the reversal confirmation.
+    # We just require the sweep wick to take liquidity but close underneath the absolute wick high.
+    if candle["High"] > prev_high and candle["Close"] < candle["High"]:
         return "bearish"
         
-    # Bullish sweep: lows wick below prior local min, but body closes above it
-    if candle["Low"] < prev_low and candle["Close"] > prev_low:
+    # Relaxed Bullish sweep: Wicks below local min, but closes above the absolute wick low.
+    if candle["Low"] < prev_low and candle["Close"] > candle["Low"]:
         return "bullish"
         
+    return None
+
+
+def get_htf_bias(df: pd.DataFrame, i: int, config: StrategyConfig) -> str:
+    """
+    Determine the Higher Timeframe Bias based on the configured mode.
+    Outputs: "bullish", "bearish", or "neutral"
+    """
+    mode = config.htf_alignment_mode
+    if mode == "none" or mode is None:
+        return "neutral"
+        
+    if mode == "market_structure":
+        if i < config.htf_lookback:
+            return "neutral"
+        
+        # Check for Higher Highs / Lower Lows
+        # A simple approach: compare current high/low to max/min of lookback period
+        current_high = df["High"].iloc[i]
+        prev_period_high = df["High"].iloc[i - config.htf_lookback : i].max()
+        
+        current_low = df["Low"].iloc[i]
+        prev_period_low = df["Low"].iloc[i - config.htf_lookback : i].min()
+        
+        if current_high > prev_period_high:
+            return "bullish" # Breaking above previous highs
+        elif current_low < prev_period_low:
+            return "bearish" # Breaking below previous lows
+        return "neutral"
+        
+    elif mode == "liquidity_draw":
+        if i < config.pdl_pdh_lookback:
+            return "neutral"
+            
+        pdh = df["High"].iloc[i - config.pdl_pdh_lookback : i].max()
+        pdl = df["Low"].iloc[i - config.pdl_pdh_lookback : i].min()
+        current_price = df["Close"].iloc[i]
+        
+        # If price is closer to PDH, bias is bullish (drawn to buy-side liquidity)
+        if abs(current_price - pdh) < abs(current_price - pdl):
+            return "bullish"
+        else:
+            return "bearish"
+            
+    elif mode == "ema_50":
+        # This will be handled in generate_signals directly to save Pandas Series calls
+        return "neutral" 
+        
+    return "neutral"
+
+
+def detect_fvg(df: pd.DataFrame, start_idx: int, end_idx: int, direction: str) -> Optional[tuple]:
+    """
+    Scan for the first Fair Value Gap (FVG) in the given direction.
+    Bearish FVG: Low of candle 1 > High of candle 3
+    Bullish FVG: High of candle 1 < Low of candle 3
+    
+    Returns: (fvg_top, fvg_bottom, fvg_idx) or None
+    """
+    for j in range(start_idx, end_idx):
+        if j < 2:
+            continue
+            
+        if direction == "bearish":
+            # Candle 1 = j-2, Candle 3 = j
+            c1_low = df["Low"].iloc[j-2]
+            c3_high = df["High"].iloc[j]
+            # Must also be a bearish displacement candle (c2 close < c2 open)
+            c2_open = df["Open"].iloc[j-1]
+            c2_close = df["Close"].iloc[j-1]
+            
+            if c1_low > c3_high and c2_close < c2_open:
+                fvg_top = c1_low
+                fvg_bottom = c3_high
+                return (fvg_top, fvg_bottom, j)
+                
+        elif direction == "bullish":
+            # Candle 1 = j-2, Candle 3 = j
+            c1_high = df["High"].iloc[j-2]
+            c3_low = df["Low"].iloc[j]
+            # Must also be a bullish displacement candle (c2 close > c2 open)
+            c2_open = df["Open"].iloc[j-1]
+            c2_close = df["Close"].iloc[j-1]
+            
+            if c1_high < c3_low and c2_close > c2_open:
+                fvg_top = c3_low
+                fvg_bottom = c1_high
+                return (fvg_top, fvg_bottom, j)
+                
     return None
 
 
@@ -145,11 +249,17 @@ def generate_signals(
     if config is None:
         config = StrategyConfig()
 
-    # Step 1: Calculate RSI & ATR
+    # Step 1: Calculate RSI & ATR & EMA
     rsi_series = calculate_rsi(df["Close"], config.rsi_period)
     rsi = rsi_series.values
     atr_series = AverageTrueRange(df["High"], df["Low"], df["Close"], window=14).average_true_range()
     atr = atr_series.values
+    
+    # Pre-calculate 50 EMA if using that mode
+    ema50 = None
+    if config.htf_alignment_mode == "ema_50":
+        ema50 = df["Close"].ewm(span=50, adjust=False).mean().values
+        
     highs = df["High"].values
     lows = df["Low"].values
     closes = df["Close"].values
@@ -185,20 +295,68 @@ def generate_signals(
                         highs, rsi, atr, i,
                         lookback=config.divergence_lookback,
                         swing_order=config.swing_order,
-                        min_rsi_diff=config.min_rsi_diff,
                         atr_multiplier=config.divergence_atr_multiplier,
+                        min_swings=config.min_divergence_swings,
                     )
+                    
+                    if config.strict_divergence and div is None:
+                        continue # Skip if divergence is required but not found
+                        
+                    if div is not None and div.swings > config.max_divergence_swings:
+                        continue # Too exhausted
+
                     if div is not None:
                         if df.index[i] in seen_times:
                             signal_found = True
                             continue
 
                     # SHORT signal — manipulation of buy-side liquidity
+                    # Check Trend at the START of the range (before manipulation)
+                    bias = get_htf_bias(df, rng.start_idx, config)
+                    if config.htf_alignment_mode == "ema_50":
+                        bias = "bullish" if closes[rng.start_idx] > ema50[rng.start_idx] else "bearish"
+                        
+                    if bias == "bullish":
+                        continue # Only take SHORTs if bias is bearish or neutral
+
                     manipulation_high = highs[i]
-                    entry = closes[i]
-                    sl = manipulation_high * (1 + config.sl_buffer_pct / 100.0)
-                    # TP = range low (opposite side of the range)
-                    tp = rng.range_low
+                    original_sl = manipulation_high * (1 + config.sl_buffer_pct / 100.0)
+                    
+                    if not config.require_fvg:
+                        entry = closes[i]
+                        sl = original_sl
+                        tp = rng.range_low
+                        entry_idx = i
+                    else:
+                        # Scan forward for Bearish FVG
+                        fvg_search_end = min(i + config.fvg_lookforward, n)
+                        fvg_result = detect_fvg(df, i+2, fvg_search_end, "bearish")
+                        
+                        if fvg_result is None:
+                            continue # Setup failed, no displacement FVG
+                            
+                        fvg_top, fvg_bottom, fvg_idx = fvg_result
+                        
+                        # Scan forward from FVG to wait for retracement entry
+                        retrace_search_start = fvg_idx + 1
+                        retrace_search_end = min(retrace_search_start + config.retrace_lookforward, n)
+                        
+                        entry_idx = -1
+                        entry_price = 0.0
+                        for k in range(retrace_search_start, retrace_search_end):
+                            if highs[k] >= fvg_bottom:
+                                entry_idx = k
+                                # Entry triggers at the bottom of the FVG as price returns up into it
+                                entry_price = fvg_bottom 
+                                break
+                                
+                        if entry_idx == -1:
+                            continue # Setup valid, but price never retraced
+                            
+                        entry = entry_price
+                        sl = original_sl
+                        tp = rng.range_low
+                        i = entry_idx # Fast-forward the outer index for timeline consistency
 
                     risk = abs(entry - sl)
                     reward = entry - tp
@@ -212,17 +370,17 @@ def generate_signals(
                         entry_price=entry,
                         stop_loss=sl,
                         take_profit=tp,
-                        entry_idx=i,
-                        entry_time=df.index[i],
+                        entry_idx=entry_idx,
+                        entry_time=df.index[entry_idx],
                         range_high=rng.range_high,
                         range_low=rng.range_low,
                         range_start_idx=rng.start_idx,
                         range_end_idx=rng.end_idx,
                         divergence=div,
                     ))
-                    seen_times.add(df.index[i])
+                    seen_times.add(df.index[entry_idx])
                     signal_found = True
-                    continue
+                    break
 
             # --- Breakdown BELOW range low ---
             breakdown_level = rng.range_low * (1 - config.breakout_pct / 100.0)
@@ -233,20 +391,68 @@ def generate_signals(
                         lows, rsi, atr, i,
                         lookback=config.divergence_lookback,
                         swing_order=config.swing_order,
-                        min_rsi_diff=config.min_rsi_diff,
                         atr_multiplier=config.divergence_atr_multiplier,
+                        min_swings=config.min_divergence_swings,
                     )
+                    
+                    if config.strict_divergence and div is None:
+                        continue # Skip if divergence is required but not found
+                        
+                    if div is not None and div.swings > config.max_divergence_swings:
+                        continue # Too exhausted
+
                     if div is not None:
                         if df.index[i] in seen_times:
                             signal_found = True
                             continue
 
                     # LONG signal — manipulation of sell-side liquidity
+                    # Check Trend at the START of the range (before manipulation)
+                    bias = get_htf_bias(df, rng.start_idx, config)
+                    if config.htf_alignment_mode == "ema_50":
+                        bias = "bullish" if closes[rng.start_idx] > ema50[rng.start_idx] else "bearish"
+                        
+                    if bias == "bearish":
+                        continue # Only take LONGs if bias is bullish or neutral
+
                     manipulation_low = lows[i]
-                    entry = closes[i]
-                    sl = manipulation_low * (1 - config.sl_buffer_pct / 100.0)
-                    # TP = range high (opposite side of the range)
-                    tp = rng.range_high
+                    original_sl = manipulation_low * (1 - config.sl_buffer_pct / 100.0)
+                    
+                    if not config.require_fvg:
+                        entry = closes[i]
+                        sl = original_sl
+                        tp = rng.range_high
+                        entry_idx = i
+                    else:
+                        # Scan forward for Bullish FVG
+                        fvg_search_end = min(i + config.fvg_lookforward, n)
+                        fvg_result = detect_fvg(df, i+2, fvg_search_end, "bullish")
+                        
+                        if fvg_result is None:
+                            continue # Setup failed, no displacement FVG
+                            
+                        fvg_top, fvg_bottom, fvg_idx = fvg_result
+                        
+                        # Scan forward from FVG to wait for retracement entry
+                        retrace_search_start = fvg_idx + 1
+                        retrace_search_end = min(retrace_search_start + config.retrace_lookforward, n)
+                        
+                        entry_idx = -1
+                        entry_price = 0.0
+                        for k in range(retrace_search_start, retrace_search_end):
+                            if lows[k] <= fvg_top:
+                                entry_idx = k
+                                # Entry triggers at the top of the FVG as price drops into it
+                                entry_price = fvg_top 
+                                break
+                                
+                        if entry_idx == -1:
+                            continue # Setup valid, but price never retraced
+                            
+                        entry = entry_price
+                        sl = original_sl
+                        tp = rng.range_high
+                        i = entry_idx # Fast-forward the outer index
 
                     risk = abs(entry - sl)
                     reward = tp - entry
@@ -260,16 +466,17 @@ def generate_signals(
                         entry_price=entry,
                         stop_loss=sl,
                         take_profit=tp,
-                        entry_idx=i,
-                        entry_time=df.index[i],
+                        entry_idx=entry_idx,
+                        entry_time=df.index[entry_idx],
                         range_high=rng.range_high,
                         range_low=rng.range_low,
                         range_start_idx=rng.start_idx,
                         range_end_idx=rng.end_idx,
                         divergence=div,
                     ))
-                    seen_times.add(df.index[i])
+                    seen_times.add(df.index[entry_idx])
                     signal_found = True
+                    break
 
     return signals
 
