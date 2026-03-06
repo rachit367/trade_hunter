@@ -38,7 +38,8 @@ while true; do
         echo "Bot exited cleanly. Stopping."
         break
     else
-        echo "Bot crashed! Restarting in 10 seconds..."
-        sleep 10
+        echo "Bot crashed with exit code $EXIT_CODE! (Possible network or API issue)"
+        echo "Waiting 60 seconds for network to recover before restarting..."
+        sleep 60
     fi
 done
