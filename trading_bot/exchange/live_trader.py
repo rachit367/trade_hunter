@@ -147,8 +147,8 @@ class LiveTrader:
         position = self.connector.get_open_position(self.product_id)
         if position is not None:
             current_size = abs(int(float(position.get("size", 0))))
-            # Ignore baseline manual positions (e.g., holding 2 permanent BTC contracts)
-            baseline = 2 if self.symbol == "BTCUSD" else 0
+            # Ignore baseline manual positions (e.g., holding 4 permanent BTC contracts)
+            baseline = 4 if self.symbol == "BTCUSD" else 0
             
             if current_size > baseline:
                 logger.info("Position already open (size=%s) -- skipping new signal", current_size)
