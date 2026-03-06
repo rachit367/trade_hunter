@@ -61,6 +61,7 @@ class LiveTrader:
         self.dry_run = dry_run
         self.lookback_hours = lookback_hours
         self.loop_interval = loop_interval
+        self.leverage = 10  # Default to 10x leverage as requested
 
         # Initialize connector
         self.connector = DeltaConnector()
@@ -69,6 +70,10 @@ class LiveTrader:
         product_info = self.connector.get_product_info(symbol)
         self.product_id = product_info["id"]
         self.tick_size = float(product_info.get("tick_size", "0.5"))
+
+        # Set default leverage (10x)
+        if not self.dry_run:
+            self.connector.set_leverage(self.product_id, self.leverage)
 
         # Track last signal to avoid duplicates
         self._last_signal_time = None

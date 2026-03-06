@@ -188,6 +188,17 @@ class DeltaConnector:
         """Get the tick size for price rounding."""
         return float(self.get_product_info(symbol).get("tick_size", "0.5"))
 
+    def set_leverage(self, product_id: int, leverage: int) -> Dict:
+        """Set the leverage for a specific product."""
+        try:
+            # Delta client POST /v2/products/{product_id}/orders/leverage
+            result = self.client.set_leverage(product_id, str(leverage))
+            logger.info("Set leverage to %dx for product_id %d", leverage, product_id)
+            return result
+        except Exception as e:
+            logger.error("Failed to set leverage to %dx for product_id %d: %s", leverage, product_id, e)
+            return {}
+
     # ------------------------------------------------------------------
     # Wallet & Positions
     # ------------------------------------------------------------------

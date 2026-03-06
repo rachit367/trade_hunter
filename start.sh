@@ -6,14 +6,29 @@
 echo "Starting Trade Hunter Bot..."
 
 while true; do
-    # Read symbol and interval from env vars (set in render.yaml or dashboard)
+    # Read configuration from env vars (set in render.yaml or dashboard)
+    MODE=${BOT_MODE:-live}
     SYMBOL=${TRADE_SYMBOL:-BTCUSD}
     INTERVAL=${TRADE_INTERVAL:-300}
 
-    echo "[$(date)] Launching bot for $SYMBOL with interval $INTERVAL seconds..."
+    echo "[$(date)] Launching bot in $MODE mode for $SYMBOL..."
     
-    # Run in live mode. Remove --dry-run if you want to place real trades!
-    python main.py --mode live --symbol $SYMBOL --loop-interval $INTERVAL --no-dry-run
+    if [ "$MODE" = "live" ]; then
+        # Real trading
+        python main.py --mode live --symbol $SYMBOL --loop-interval $INTERVAL --no-dry-run
+    elif [ "$MODE" = "dry-run" ]; then
+        # Live signals but no real orders placed
+        python main.py --mode live --symbol $SYMBOL --loop-interval $INTERVAL --dry-run
+    elif [ "$MODE" = "backtest" ]; then
+        # Backtest latest 24 hours
+        python main.py --mode backtest --symbol $SYMBOL --lookback 24
+    elif [ "$MODE" = "signals" ]; then
+        # Scan for current signals
+        python main.py --mode signals --symbol $SYMBOL --lookback 12
+    else
+        echo "Unknown BOT_MODE: $MODE. Exiting."
+        exit 1
+    fi
     
     EXIT_CODE=$?
     
