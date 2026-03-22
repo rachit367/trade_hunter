@@ -46,12 +46,12 @@ echo  Pairs     : %BOT_SYMBOLS%
 echo  Timeframes: %BOT_TIMEFRAMES%
 echo  Mode      : %BOT_MODE%
 echo.
-echo  Dashboard : http://localhost:8501
+echo  Dashboard : http://localhost:8304
 echo  Press Ctrl+C to stop.
 echo.
 
 venv\Scripts\python.exe -m streamlit run dashboard.py ^
-    --server.port 8501 ^
+    --server.port 8304 ^
     --server.headless false ^
     --browser.gatherUsageStats false
 
