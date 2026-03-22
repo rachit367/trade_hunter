@@ -88,15 +88,23 @@ Examples:
                         help="Dry-run mode: detect signals but don't place orders (default)")
     parser.add_argument("--no-dry-run", dest="dry_run", action="store_false",
                         help="LIVE mode: actually place orders on Delta Exchange")
-    parser.add_argument("--loop-interval", type=int, default=300,
-                        help="Seconds between live trading cycles (default: 300)")
+    parser.add_argument("--loop-interval", type=int, default=30,
+                        help="Seconds between live trading cycles (default: 30)")
+
+    # Multi-pair / multi-timeframe (live mode)
+    parser.add_argument("--symbols", type=str, default=None,
+                        help="Comma-separated symbols for multi-pair (e.g. BTCUSD,ETHUSD)")
+    parser.add_argument("--timeframes", type=str, default=None,
+                        help="Comma-separated timeframes (e.g. 5m,15m)")
 
     return parser.parse_args()
 
 
 def build_config(args: argparse.Namespace) -> StrategyConfig:
-    """Build StrategyConfig from CLI args with defaults."""
-    cfg = StrategyConfig()
+    """Build StrategyConfig from CLI args, scaled to the requested resolution."""
+    # Start from timeframe-scaled preset (correct min_range, time_exit_candles, etc.)
+    cfg = StrategyConfig.for_timeframe(args.resolution)
+    # Apply any CLI overrides on top
     if args.rsi_period is not None:
         cfg.rsi_period = args.rsi_period
     if args.min_range is not None:
@@ -168,6 +176,7 @@ def main():
         print()
         for i, sig in enumerate(signals, 1):
             print(f"  Signal {i}: {sig}")
+            print(f"           HTF Bias: {sig.htf_bias} | Session: {sig.session} | Entry: {sig.entry_type}")
             if sig.divergence:
                 d = sig.divergence
                 print(f"           Divergence: {d.divergence_type} | "
@@ -208,14 +217,22 @@ def main():
 def _run_live(args, config):
     """Start the Delta Exchange live trading loop."""
     from trading_bot.exchange.live_trader import LiveTrader, setup_logging
+    from trading_bot.strategy.risk_manager import RiskConfig
 
-    log_filename = f"trading_{args.symbol.lower()}.log"
+    # Parse multi-pair / multi-TF args
+    symbols = [s.strip() for s in args.symbols.split(",")] if args.symbols else [args.symbol]
+    timeframes = [t.strip() for t in args.timeframes.split(",")] if args.timeframes else [args.resolution]
+
+    import pathlib
+    pathlib.Path("logs").mkdir(exist_ok=True)
+    log_filename = f"logs/trading_{'_'.join(symbols).lower()}.log"
     setup_logging(log_filename)
 
     mode_label = "DRY RUN" if args.dry_run else "** LIVE TRADING **"
     print("-" * 60)
     print(f"  Mode: {mode_label}")
-    print(f"  Symbol: {args.symbol}")
+    print(f"  Symbols: {', '.join(symbols)}")
+    print(f"  Timeframes: {', '.join(timeframes)}")
     print(f"  Lookback: {args.lookback}h | Loop: {args.loop_interval}s")
     print("-" * 60)
 
@@ -231,13 +248,27 @@ def _run_live(args, config):
             print("\n  Aborted.")
             return
 
-    trader = LiveTrader(
-        symbol=args.symbol,
-        config=config,
-        dry_run=args.dry_run,
-        lookback_hours=args.lookback,
-        loop_interval=args.loop_interval,
-    )
+    # Use MultiPairTrader when multiple symbols or timeframes
+    if len(symbols) > 1 or len(timeframes) > 1:
+        from trading_bot.exchange.multi_pair_trader import MultiPairTrader
+
+        trader = MultiPairTrader(
+            symbols=symbols,
+            timeframes=timeframes,
+            dry_run=args.dry_run,
+            loop_interval=args.loop_interval,
+            lookback_hours=args.lookback,
+            initial_balance=args.balance,
+        )
+    else:
+        trader = LiveTrader(
+            symbol=symbols[0],
+            config=config,
+            dry_run=args.dry_run,
+            lookback_hours=args.lookback,
+            loop_interval=args.loop_interval if args.loop_interval != 30 else None,
+            resolution=timeframes[0],
+        )
     trader.run_loop()
 
 

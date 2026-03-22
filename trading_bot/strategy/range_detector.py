@@ -114,3 +114,74 @@ def detect_ranges(
             i += 1
 
     return ranges
+
+
+def detect_asian_ranges(
+    df: pd.DataFrame,
+    asian_start_hour: int = 0,
+    asian_end_hour: int = 8,
+) -> List[ConsolidationRange]:
+    """
+    Detect Asian session ranges (00:00-08:00 UTC by default).
+
+    ICT methodology: The Asian session forms the primary accumulation phase.
+    The range formed during this period defines the liquidity pools
+    that London and New York sessions will sweep.
+
+    Groups candles by date, finds the Asian window per day,
+    and creates a ConsolidationRange from the high/low of that window.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        OHLCV data with DatetimeIndex.
+    asian_start_hour : int
+        Start hour of Asian range (UTC, default 0).
+    asian_end_hour : int
+        End hour of Asian range (UTC, default 8).
+
+    Returns
+    -------
+    List[ConsolidationRange]
+        One range per day where sufficient Asian session data exists.
+    """
+    if not hasattr(df.index, 'hour'):
+        return []
+
+    ranges: List[ConsolidationRange] = []
+    highs = df["High"].values
+    lows = df["Low"].values
+
+    # Group by date
+    dates = pd.Series(df.index.date, index=df.index)
+    unique_dates = dates.unique()
+
+    for date in unique_dates:
+        # Find candles in the Asian window for this date
+        mask = (dates == date) & (df.index.hour >= asian_start_hour) & (df.index.hour < asian_end_hour)
+        asian_indices = np.where(mask.values)[0]
+
+        if len(asian_indices) < 3:  # Need at least 3 candles for a meaningful range
+            continue
+
+        start_idx = int(asian_indices[0])
+        end_idx = int(asian_indices[-1])
+        range_high = float(np.max(highs[start_idx:end_idx + 1]))
+        range_low = float(np.min(lows[start_idx:end_idx + 1]))
+
+        # Skip if range is too narrow (noise) or too wide (not consolidation)
+        mid = (range_high + range_low) / 2.0
+        if mid <= 0:
+            continue
+        width_pct = ((range_high - range_low) / mid) * 100.0
+        if width_pct > 3.0:  # Asian range shouldn't be wider than 3%
+            continue
+
+        ranges.append(ConsolidationRange(
+            start_idx=start_idx,
+            end_idx=end_idx,
+            range_high=range_high,
+            range_low=range_low,
+        ))
+
+    return ranges

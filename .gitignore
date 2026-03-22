@@ -40,9 +40,14 @@ venv.bak/
 
 # Project specific
 trading_chart.html
+logs/*
+!logs/.gitkeep
 data/*.csv
 data/*.json
 !trading_bot/data/__init__.py
+
+# Claude
+.claude/
 
 # OS
 .DS_Store

@@ -183,7 +183,7 @@ def detect_bullish_divergence(
     swing_order: int = 2,
     min_rsi_diff: float = 0.0,
     atr_multiplier: float = 0.7,
-    min_swings: int = 3,
+    min_swings: int = 2,
 ) -> Optional[DivergenceResult]:
     """
     Check for bullish divergence at `current_idx`.

@@ -44,6 +44,22 @@ class PerformanceMetrics:
 
     avg_holding_candles: float = 0.0
 
+    # Fee & cost tracking
+    total_fees: float = 0.0
+    total_slippage: float = 0.0
+    gross_pnl: float = 0.0
+    net_pnl: float = 0.0
+
+    # Streak tracking
+    max_consecutive_wins: int = 0
+    max_consecutive_losses: int = 0
+
+    # Calmar ratio (annualized return / max drawdown)
+    calmar_ratio: float = 0.0
+
+    # Time exits
+    time_exits: int = 0
+
     def summary(self) -> str:
         """Formatted performance report."""
         lines = [
@@ -70,8 +86,17 @@ class PerformanceMetrics:
             f"|  {'Sharpe Ratio':<25} {self.sharpe_ratio:>25.2f}  |",
             f"|  {'Max Drawdown':<25} ${self.max_drawdown:>23.2f}  |",
             f"|  {'Max Drawdown %':<25} {self.max_drawdown_pct:>24.2f}%  |",
+            f"|  {'Calmar Ratio':<25} {self.calmar_ratio:>25.2f}  |",
+            "+" + "-" * 55 + "+",
+            f"|  {'Gross P&L':<25} ${self.gross_pnl:>23.2f}  |",
+            f"|  {'Net P&L':<25} ${self.net_pnl:>23.2f}  |",
+            f"|  {'Total Fees':<25} ${self.total_fees:>23.2f}  |",
+            f"|  {'Total Slippage':<25} ${self.total_slippage:>23.2f}  |",
             "+" + "-" * 55 + "+",
             f"|  {'Avg Holding (candles)':<25} {self.avg_holding_candles:>25.1f}  |",
+            f"|  {'Time Exits':<25} {self.time_exits:>25}  |",
+            f"|  {'Max Consec. Wins':<25} {self.max_consecutive_wins:>25}  |",
+            f"|  {'Max Consec. Losses':<25} {self.max_consecutive_losses:>25}  |",
             "+" + "=" * 55 + "+",
             "",
         ]
@@ -157,5 +182,40 @@ def calculate_metrics(result: BacktestResult) -> PerformanceMetrics:
     # Average holding period
     holding = [t.holding_candles for t in trades]
     metrics.avg_holding_candles = np.mean(holding) if holding else 0.0
+
+    # Fee & cost tracking
+    metrics.total_fees = sum(t.entry_fee + t.exit_fee for t in trades)
+    metrics.total_slippage = sum(t.slippage_cost for t in trades)
+    metrics.gross_pnl = sum(t.gross_pnl_dollar for t in trades)
+    metrics.net_pnl = sum(t.net_pnl_dollar for t in trades)
+
+    # Time exits
+    metrics.time_exits = sum(1 for t in trades if t.outcome == TradeOutcome.TIME_EXIT)
+
+    # Consecutive wins/losses
+    max_cw = 0
+    max_cl = 0
+    current_cw = 0
+    current_cl = 0
+    for t in trades:
+        if t.outcome == TradeOutcome.WIN:
+            current_cw += 1
+            current_cl = 0
+            max_cw = max(max_cw, current_cw)
+        elif t.outcome == TradeOutcome.LOSS:
+            current_cl += 1
+            current_cw = 0
+            max_cl = max(max_cl, current_cl)
+        else:
+            current_cw = 0
+            current_cl = 0
+    metrics.max_consecutive_wins = max_cw
+    metrics.max_consecutive_losses = max_cl
+
+    # Calmar ratio (annualized return / |max drawdown|)
+    if metrics.max_drawdown < 0:
+        metrics.calmar_ratio = metrics.total_return_pct / abs(metrics.max_drawdown_pct)
+    else:
+        metrics.calmar_ratio = float("inf") if metrics.total_return_pct > 0 else 0.0
 
     return metrics

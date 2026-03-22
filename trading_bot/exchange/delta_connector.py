@@ -80,6 +80,15 @@ class DeltaConnector:
     # Data Fetching
     # ------------------------------------------------------------------
 
+    # Delta Exchange API hard limit per single candle request
+    _API_CANDLE_LIMIT = 4000
+
+    # Minutes per resolution string
+    _TF_MINUTES = {
+        "1m": 1, "5m": 5, "15m": 15, "30m": 30,
+        "1h": 60, "4h": 240, "1d": 1440,
+    }
+
     def fetch_candles(
         self,
         symbol: str = "BTCUSD",
@@ -89,7 +98,8 @@ class DeltaConnector:
         """
         Fetch OHLCV candles from Delta Exchange.
 
-        Uses GET /v2/history/candles endpoint.
+        Uses GET /v2/history/candles endpoint with automatic pagination
+        when the requested lookback exceeds the API's 4000-candle limit.
 
         Parameters
         ----------
@@ -105,35 +115,39 @@ class DeltaConnector:
         pd.DataFrame
             OHLCV DataFrame with DatetimeIndex.
         """
+        tf_minutes = self._TF_MINUTES.get(resolution, 5)
+        candles_needed = int(lookback_hours * 60 / tf_minutes)
+
         end_ts = int(time.time())
         start_ts = end_ts - (lookback_hours * 3600)
 
-        response = self.client.request(
-            "GET",
-            "/v2/history/candles",
-            query={
-                "resolution": resolution,
-                "symbol": symbol,
-                "start": str(start_ts),
-                "end": str(end_ts),
-            },
-            auth=False,
-        )
+        all_candles: list = []
 
-        data = response.json()
+        if candles_needed <= self._API_CANDLE_LIMIT:
+            # Single request — fits within limit
+            all_candles = self._fetch_candles_chunk(symbol, resolution, start_ts, end_ts)
+        else:
+            # Paginate backwards in chunks of _API_CANDLE_LIMIT candles
+            chunk_seconds = self._API_CANDLE_LIMIT * tf_minutes * 60
+            chunk_end = end_ts
+            while chunk_end > start_ts:
+                chunk_start = max(chunk_end - chunk_seconds, start_ts)
+                chunk = self._fetch_candles_chunk(symbol, resolution, chunk_start, chunk_end)
+                if not chunk:
+                    break
+                all_candles = chunk + all_candles
+                chunk_end = chunk_start - (tf_minutes * 60)
+                if chunk_end <= start_ts:
+                    break
+                time.sleep(0.15)  # light rate-limit pause between pages
 
-        if not data.get("success"):
-            error = data.get("error", "Unknown error")
-            raise RuntimeError(f"Failed to fetch candles: {error}")
-
-        candles = data.get("result", [])
-        if not candles:
+        if not all_candles:
             raise RuntimeError(
                 f"No candle data returned for {symbol} "
                 f"(resolution={resolution}, lookback={lookback_hours}h)"
             )
 
-        df = pd.DataFrame(candles)
+        df = pd.DataFrame(all_candles)
         df["Datetime"] = pd.to_datetime(df["time"], unit="s")
         df.set_index("Datetime", inplace=True)
         df.rename(
@@ -148,9 +162,35 @@ class DeltaConnector:
         )
         df = df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
         df.sort_index(inplace=True)
+        df = df[~df.index.duplicated(keep="last")]
 
         logger.info("Fetched %d candles for %s (%s)", len(df), symbol, resolution)
         return df
+
+    def _fetch_candles_chunk(
+        self,
+        symbol: str,
+        resolution: str,
+        start_ts: int,
+        end_ts: int,
+    ) -> list:
+        """Fetch a single page of candles and return the raw list."""
+        response = self.client.request(
+            "GET",
+            "/v2/history/candles",
+            query={
+                "resolution": resolution,
+                "symbol": symbol,
+                "start": str(start_ts),
+                "end": str(end_ts),
+            },
+            auth=False,
+        )
+        data = response.json()
+        if not data.get("success"):
+            error = data.get("error", "Unknown error")
+            raise RuntimeError(f"Failed to fetch candles: {error}")
+        return data.get("result", [])
 
     # ------------------------------------------------------------------
     # Product Lookup
@@ -495,3 +535,37 @@ class DeltaConnector:
         except Exception as e:
             logger.error("Failed to get active orders: %s", e)
             return []
+
+    def modify_order(
+        self, 
+        order_id: int, 
+        product_id: int, 
+        new_stop_price: float,
+        tick_size: float = 0.5
+    ) -> Dict:
+        """
+        Modify the stop trigger price of an existing open order.
+        """
+        from delta_rest_client import round_by_tick_size
+        
+        rounded_price = str(round_by_tick_size(new_stop_price, tick_size))
+        payload = {
+            "id": order_id,
+            "product_id": product_id,
+            "stop_price": rounded_price
+        }
+        
+        logger.info(
+            "MODIFY ORDER: Moving Stop Loss on order_id=%d to %s",
+            order_id, rounded_price
+        )
+        
+        response = self.client.request(
+            "PUT",
+            "/v2/orders",
+            payload=payload,
+            auth=True
+        )
+        result = response.json()
+        logger.info("Modify order result: %s", result)
+        return result
